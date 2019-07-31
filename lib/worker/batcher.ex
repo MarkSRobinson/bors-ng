@@ -250,14 +250,6 @@ defmodule BorsNG.Worker.Batcher do
     |> Enum.sort_by(&(&1.patch.pr_xref))
     stmp = "#{project.staging_branch}.tmp"
 
-#    commit_title = "Commit Title to fix"
-#    commit_message = "Commit message to fix \n\n\n More details"
-#    pr_number = 36
-#    {:ok, commits} = GitHub.get_pr_commits(repo_conn, pr_number)
-#
-#    IO.inspect(commits)
-#    Logger.info("Commits #{inspect(commits)}")
-
     base = GitHub.get_branch!(
       repo_conn,
       batch.into_branch)
@@ -283,34 +275,6 @@ defmodule BorsNG.Worker.Batcher do
             commit_message: "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}"})
       end
     end
-#
-#    do_squash_merge = fn %{patch: patch}, branch ->
-#      case branch do
-#        :conflict -> :conflict
-#        :canceled -> :canceled
-#        _ ->
-#
-#            {:ok,cpt} = GitHub.create_commit!(
-#            repo_conn,
-#            %{
-#              branch: stmp,
-#              tree: Enum.at(commits, length(commits)-1).tree_sha,
-#              parents: [base.commit],
-#              commit_message: "My commit message",
-##              commit_message: "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}",
-#              committer: nil})
-#
-#          Logger.info("Created Commit #{inspect(cpt)}")
-#
-#          GitHub.merge_branch!(
-#               repo_conn,
-#               %{
-#                 from: cpt,
-#                 to: stmp,
-#                 commit_message: "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}"})
-#      end
-#    end
-#
 
     merge = Enum.reduce(patch_links, tbase, do_merge_patch)
     {status, commit} = start_waiting_merged_batch(
