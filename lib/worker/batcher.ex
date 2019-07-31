@@ -462,30 +462,20 @@ defmodule BorsNG.Worker.Batcher do
       {:ok, x} -> {:ok, x}
     end
 
-    if toml.use_squash_merge do
-      patches = Repo.all(LinkPatchBatch.from_batch(batch.id))
-      Enum.map(patches, fn patch ->
-        pr = GitHub.get_pr!(repo_conn, patch.patch.pr_xref)
-        {:ok, pr_commits} = BorsNG.GitHub.get_pr_commits(repo_conn, pr.number)
-        commit_messages = Enum.reduce(pr_commits, "", fn(x, acc) -> "#{x.commit_message}\n#{acc}" end )
-        {:ok, _} = squash_with_retry(
-          repo_conn,
-          pr,
-          commit_messages)
-        patches = batch.id
-                  |> Patch.all_for_batch()
-                  |> Repo.all()
-      end)
-    else
-          {:ok, _} = push_with_retry(
-            repo_conn,
-            batch.commit,
-            batch.into_branch)
-    end
+    {:ok, _} = push_with_retry(
+      repo_conn,
+      batch.commit,
+      batch.into_branch)
 
     patches = batch.id
               |> Patch.all_for_batch()
               |> Repo.all()
+
+    Enum.each(patches, fn patch ->
+      pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+      pr = %BorsNG.GitHub.Pr{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
+      pr = GitHub.update_pr!(repo_conn, pr)
+    end)
 
     send_message(repo_conn, patches, {:succeeded, statuses})
 
