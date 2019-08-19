@@ -249,6 +249,7 @@ defmodule BorsNG.Worker.Batcher do
     patch_links = Repo.all(LinkPatchBatch.from_batch(batch.id))
     |> Enum.sort_by(&(&1.patch.pr_xref))
     stmp = "#{project.staging_branch}.tmp"
+
     base = GitHub.get_branch!(
       repo_conn,
       batch.into_branch)
@@ -274,6 +275,7 @@ defmodule BorsNG.Worker.Batcher do
             commit_message: "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}"})
       end
     end
+
     merge = Enum.reduce(patch_links, tbase, do_merge_patch)
     {status, commit} = start_waiting_merged_batch(
       batch,
@@ -281,6 +283,7 @@ defmodule BorsNG.Worker.Batcher do
       base,
       merge)
     now = DateTime.to_unix(DateTime.utc_now(), :second)
+
     GitHub.delete_branch!(repo_conn, stmp)
     send_status(repo_conn, batch, status)
     batch
@@ -301,11 +304,43 @@ defmodule BorsNG.Worker.Batcher do
     |> Batcher.GetBorsToml.get("#{batch.project.staging_branch}.tmp")
     |> case do
       {:ok, toml} ->
-        parents = [base.commit | Enum.map(patch_links, &(&1.patch.commit))]
+
+        parents = if toml.use_squash_merge do
+          Logger.debug("Commit ID #{inspect(patch_links)}")
+
+          parents = Enum.map(patch_links, fn patch_link ->
+            Logger.debug("Patch Link #{inspect(patch_link)}")
+            Logger.debug("Patch #{inspect(patch_link.patch)}")
+
+            {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch_link.patch.pr_xref)
+            {:ok, pr} = GitHub.get_pr(repo_conn, patch_link.patch.pr_xref)
+
+            {token, _} = repo_conn
+             user = GitHub.get_user_by_login!(token, pr.user.login)
+
+            Logger.debug("PR #{inspect(pr)}")
+
+            cpt = GitHub.create_commit!(
+              repo_conn,
+              %{
+                tree: Enum.at(commits, length(commits)-1).tree_sha,
+                parents: [base.commit],
+                commit_message: "#{pr.title} (##{pr.number})\n#{pr.body}",
+                committer: %{name: user.login, email: user.email}})
+
+            Logger.info("Commit Sha #{inspect(cpt)}")
+              cpt
+          end)
+          parents
+        else
+          parents = [base.commit | Enum.map(patch_links, &(&1.patch.commit))]
+          parents
+        end
         commit_message = Batcher.Message.generate_commit_message(
           patch_links,
           toml.cut_body_after,
           gather_co_authors(batch, patch_links))
+
         head = GitHub.synthesize_commit!(
           repo_conn,
           %{
@@ -389,13 +424,28 @@ defmodule BorsNG.Worker.Batcher do
   defp complete_batch(:ok, batch, statuses) do
     project = batch.project
     repo_conn = get_repo_conn(project)
+    {res,toml} = case Batcher.GetBorsToml.get(repo_conn, "#{batch.project.staging_branch}") do
+      {:error, :fetch_failed} -> Batcher.GetBorsToml.get(repo_conn, "#{batch.project.staging_branch}.tmp")
+      {:ok, x} -> {:ok, x}
+    end
+
     {:ok, _} = push_with_retry(
       repo_conn,
       batch.commit,
       batch.into_branch)
+
     patches = batch.id
     |> Patch.all_for_batch()
     |> Repo.all()
+
+    if toml.use_squash_merge do
+      Enum.each(patches, fn patch ->
+        pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+        pr = %BorsNG.GitHub.Pr{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
+        pr = GitHub.update_pr!(repo_conn, pr)
+        GitHub.post_comment!(repo_conn, patch.pr_xref, "# Pull request successfully merged into master.")
+      end)
+    end
 
     send_message(repo_conn, patches, {:succeeded, statuses})
   end
